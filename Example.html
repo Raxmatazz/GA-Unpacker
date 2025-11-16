@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GA-Unpacker TOTP</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 20px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .totp-display {
+            background: #2c3e50;
+            color: white;
+            padding: 15px;
+            border-radius: 5px;
+            text-align: center;
+            margin-bottom: 20px;
+            font-family: monospace;
+        }
+        .code {
+            font-size: 24px;
+            font-weight: bold;
+            letter-spacing: 2px;
+        }
+        .remaining {
+            color: #ecf0f1;
+            font-size: 14px;
+            margin-top: 5px;
+        }
+        .test-data {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 5px;
+            margin-top: 20px;
+        }
+        strong {
+            color: #2c3e50;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>TOTP</h1>
+        
+        <div class="totp-display">
+            <div>Code: <span class="hv-totp-code code">------</span></div>
+            <div class="hv-totp-remaining remaining">(30s)</div>
+        </div>
+   </div>
+
+    <script>
+        // ---------- CONFIG TOTP ----------
+        const TOTP_SECRET = 'IJAVESCPKIZUEVBWGVLVUR2DGNEFATKUJVAUEWCTINHFIWSWLBTH';
+        const TOTP_PERIOD = 30;
+        const TOTP_DIGITS = 6;
+
+        // ---------- Helpers ----------
+        const txt = (el) => (el ? (el.textContent || '').replace(/\u00a0/g, ' ').trim() : '');
+        const isHidden = (el) => {
+            if (!el) return true;
+            if (el.classList.contains('ng-hide')) return true;
+            if (el.getAttribute('aria-hidden') === 'true') return true;
+            const cs = getComputedStyle(el);
+            return cs.display === 'none' || cs.visibility === 'hidden';
+        };
+
+        // ---------- TOTP Implementation ----------
+        function base32ToBytes(str) {
+            const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+            const cleaned = (str || '').toUpperCase().replace(/[^A-Z2-7]/g, '');
+            let bits = '';
+            for (let i = 0; i < cleaned.length; i++) {
+                const v = alphabet.indexOf(cleaned.charAt(i));
+                if (v === -1) continue;
+                bits += v.toString(2).padStart(5, '0');
+            }
+            const out = [];
+            for (let i = 0; i + 8 <= bits.length; i += 8) {
+                out.push(parseInt(bits.slice(i, i + 8), 2));
+            }
+            return new Uint8Array(out);
+        }
+
+        async function generateTOTP(secretBase32) {
+            try {
+                if (!secretBase32 || !crypto || !crypto.subtle) return null;
+
+                const keyBytes = base32ToBytes(secretBase32);
+                if (!keyBytes.length) return null;
+
+                const nowSec = Math.floor(Date.now() / 1000);
+                const counter = Math.floor(nowSec / TOTP_PERIOD);
+
+                const buf = new ArrayBuffer(8);
+                const view = new DataView(buf);
+                const high = Math.floor(counter / 0x100000000);
+                const low = counter >>> 0;
+                view.setUint32(0, high);
+                view.setUint32(4, low);
+
+                const key = await crypto.subtle.importKey(
+                    'raw',
+                    keyBytes,
+                    { name: 'HMAC', hash: 'SHA-1' },
+                    false,
+                    ['sign']
+                );
+
+                const hmac = new Uint8Array(await crypto.subtle.sign('HMAC', key, buf));
+                const offset = hmac[hmac.length - 1] & 0x0f;
+
+                const code =
+                    ((hmac[offset] & 0x7f) << 24) |
+                    ((hmac[offset + 1] & 0xff) << 16) |
+                    ((hmac[offset + 2] & 0xff) << 8) |
+                    (hmac[offset + 3] & 0xff);
+
+                const otp = (code % (10 ** TOTP_DIGITS)).toString().padStart(TOTP_DIGITS, '0');
+                const remaining = TOTP_PERIOD - (nowSec % TOTP_PERIOD);
+
+                return { otp, remaining };
+            } catch {
+                return null;
+            }
+        }
+
+        async function updateTotpDisplay() {
+            if (!TOTP_SECRET.trim()) return;
+            const info = await generateTOTP(TOTP_SECRET.trim());
+            if (!info) return;
+            const { otp, remaining } = info;
+
+            document.querySelectorAll('.hv-totp-code').forEach(el => {
+                el.textContent = otp;
+            });
+            document.querySelectorAll('.hv-totp-remaining').forEach(el => {
+                el.textContent = `(${remaining}s)`;
+            });
+        }
+
+        // Iniciar atualização do TOTP
+        setInterval(updateTotpDisplay, 1000);
+        updateTotpDisplay();
+
+        // ---------- Funções de extração de dados (mantidas para referência) ----------
+        function findValueForStrong(st, container) {
+            let p = st;
+            while (p) {
+                p = p.nextSibling;
+                if (!p) break;
+                if (p.nodeType === Node.ELEMENT_NODE && p.tagName === 'STRONG') break;
+                if (p.nodeType === Node.ELEMENT_NODE && !isHidden(p)) {
+                    if (p.tagName === 'SPAN') {
+                        return p;
+                    }
+                    const innerSpan = p.querySelector('span');
+                    if (innerSpan && !isHidden(innerSpan)) {
+                        return innerSpan;
+                    }
+                }
+            }
+            return null;
+        }
+
+        function extractPairs(container) {
+            const res = [];
+            if (!container) return res;
+
+            const strongs = Array.from(container.querySelectorAll('strong'));
+            for (const st of strongs) {
+                const label = txt(st);
+                if (!label) continue;
+
+                const valueEl = findValueForStrong(st, container);
+                let value = valueEl ? txt(valueEl) : '';
+
+                const cleanLabel = label
+                    .replace(/\s+/g, ' ')
+                    .replace(/^Comunication$/i, 'Communication');
+
+                if (!value) value = 'N/A';
+
+                res.push([cleanLabel, value]);
+            }
+            return dedupePairs(res);
+        }
+
+        function dedupePairs(pairs) {
+            const seen = new Set();
+            const out = [];
+            for (const [k, v] of pairs) {
+                const key = `${k}::${v}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                out.push([k, v]);
+            }
+            return out;
+        }
+    </script>
+</body>
+</html>
